@@ -11,8 +11,6 @@ document.addEventListener("DOMContentLoaded", () => {
     const password = document.getElementById("password").value.trim();
 
     if (username && password) {
-      console.log("Login Attempt:", { username, password });
-
       fetch("/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -49,8 +47,6 @@ document.addEventListener("DOMContentLoaded", () => {
       alert("Passwords do not match.");
       return;
     }
-
-    console.log("Sign-Up Attempt:", { username, email, password });
 
     fetch("/signup", {
       method: "POST",

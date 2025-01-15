@@ -49,7 +49,6 @@ app.get("/", (req, res) => {
   const token = req.cookies.authToken;
 
   if (!token) {
-    console.log("No token found, redirecting to login.");
     return res.redirect("/login");
   }
 
@@ -60,6 +59,30 @@ app.get("/", (req, res) => {
 
     return res.sendFile(path.join(__dirname, "public", "home.html"));
   });
+});
+
+app.get("/data", async (req, res) => {
+  const token = req.cookies.authToken;
+  const reciever = jwt.verify(token, secret);
+
+  let msg = await query(
+    `SELECT messages FROM uid WHERE username = "${reciever}"`
+  );
+  return res.json(msg[0].messages);
+});
+app.post("/data", async (req, res) => {
+  const token = req.cookies.authToken;
+  const reciever = jwt.verify(token, secret);
+  const sender = req.body.sender;
+
+  const Query = `
+  Update uid
+  Set messages = JSON_REMOVE(messages, ?)
+  Where username = ?;
+  `;
+  const values = [`$.${sender}`, reciever];
+
+  await query(Query, values);
 });
 
 app.get("/friends", async (req, res) => {
@@ -74,19 +97,16 @@ app.get("/friends", async (req, res) => {
 
 app.post("/friends", async (req, res) => {
   const friend = req.body.contactName;
-  console.log(friend);
   const user = jwt.verify(req.cookies.authToken, secret);
 
   const exists = await query(
     `SELECT EXISTS(SELECT 1 FROM uid WHERE username = '${friend}') AS user_exists;`
   );
   if (exists[0].user_exists) {
-    console.log("user exists");
     try {
       await query(`UPDATE uid
         SET friends = JSON_ARRAY_APPEND(friends, '$', '${friend}')
         WHERE username = '${user}'`);
-      console.log("Friend added successfully.");
       return res.status(200).json({ message: "Friend added successfully" });
     } catch (error) {
       return res.status(500).json({ message: "Server error" });
@@ -106,7 +126,6 @@ app.post("/login", async (req, res) => {
       await query(`SELECT * FROM uid WHERE username = "${req.body.username}"`)
     )[0]
   ) {
-    console.log("User not found, redirecting to signup.");
     return res.redirect("/signup");
   }
 
@@ -114,7 +133,6 @@ app.post("/login", async (req, res) => {
     `SELECT password FROM uid WHERE username = "${req.body.username}"`
   );
   if (password[0].password == req.body.password) {
-    console.log("Logged in successfully.");
     const token = jwt.sign(req.body.username, secret);
 
     res.cookie("authToken", token, {
@@ -159,18 +177,38 @@ io.use((socket, next) => {
     return decoded;
   });
   userSocketMap.set(uid, socket.id);
-  console.log(`User ${uid} connected.`);
   next();
 });
 
-io.on("connection", (socket) => {
-  socket.on("message", ({ toUser, message }) => {
-    const recipientSocketId = userSocketMap.get(toUser);
-
+io.on("connection", async (socket) => {
+  socket.on("message", async ({ reciever, message }) => {
+    const recipientSocketId = userSocketMap.get(reciever);
+    const cookies = socket.handshake.headers.cookie;
+    const auth = cookies
+      .split("; ")
+      .find((c) => c.startsWith("authToken="))
+      ?.split("=")[1];
+    let sender = jwt.verify(auth, secret, (err, decoded) => {
+      if (err) {
+        return err;
+      }
+      return decoded;
+    });
+    const Query = `
+    UPDATE uid
+    SET messages = CASE
+      WHEN JSON_CONTAINS_PATH(messages, 'one', ?) THEN 
+        JSON_ARRAY_APPEND(messages, ?, ?)
+      ELSE 
+        JSON_SET(messages, ?, JSON_ARRAY(?))
+    END
+    WHERE username = ?;
+    `;
+    let path = `$.${sender}`;
+    const values = [path, path, message, path, message, reciever];
+    await query(Query, values);
     if (recipientSocketId) {
-      io.to(recipientSocketId).emit("message", message);
-    } else {
-      console.log(`User ${toUser} is not connected.`);
+      io.to(recipientSocketId).emit("message", sender, message);
     }
   });
 
@@ -178,7 +216,6 @@ io.on("connection", (socket) => {
     for (let [uid, socketId] of userSocketMap.entries()) {
       if (socketId === socket.id) {
         userSocketMap.delete(uid);
-        console.log(`${uid} disconnected.`);
         break;
       }
     }

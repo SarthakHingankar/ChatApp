@@ -30,7 +30,10 @@ fetch("/friends", {
 function displayMessage(sender) {
   fetch("/data", {
     method: "GET",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      senders: `${sender}`,
+    },
   })
     .then((res) => {
       if (res) {
@@ -38,8 +41,7 @@ function displayMessage(sender) {
       }
     })
     .then((res) => {
-      const messages = res[sender];
-      messages.forEach((message) => {
+      res.forEach((message) => {
         const msg = document.createElement("p");
         msg.textContent = `${message}`;
         msg.className = "recMessage";

@@ -6,16 +6,19 @@ const path = require("path");
 const jwt = require("jsonwebtoken");
 const cookieParser = require("cookie-parser");
 require("dotenv").config();
-const bcrypt = require("bcrypt");
-const crypto = require("crypto");
 
-const secretKey = process.env.msgSecret;
-const algorithm = "aes-256-ctr";
 const secret = process.env.secretKey;
 const app = express();
 app.use(express.static(path.join(__dirname, "public")));
 app.use(express.json());
 app.use(cookieParser());
+
+const cache = {
+  user1: {
+    id: 1,
+    username: "user1",
+  },
+};
 
 const pool = mysql.createPool({
   host: "localhost",
@@ -37,39 +40,6 @@ const query = async (query, params) => {
     });
   });
 };
-
-async function hashPass(password) {
-  const saltRounds = 5;
-  const hashedPass = await bcrypt.hash(password, saltRounds);
-  return hashedPass;
-}
-
-async function verifyPass(pass, inpPass) {
-  const match = await bcrypt.compare(pass, inpPass);
-  return match;
-}
-
-function encryptMsg(message) {
-  const iv = crypto.randomBytes(16); // Initialization vector
-  const cipher = crypto.createCipheriv(algorithm, secretKey, iv);
-  let encrypted = cipher.update(message, "utf8", "hex");
-  encrypted += cipher.final("hex");
-  return {
-    iv: iv.toString("hex"),
-    encryptedData: encrypted,
-  };
-}
-
-function decryptMessage(encryptedData, iv) {
-  const decipher = crypto.createDecipheriv(
-    algorithm,
-    secretKey,
-    Buffer.from(iv, "hex")
-  );
-  let decrypted = decipher.update(encryptedData, "hex", "utf8");
-  decrypted += decipher.final("utf8");
-  return decrypted;
-}
 
 const httpServer = createServer(app);
 const io = new Server(httpServer);
@@ -94,24 +64,11 @@ app.get("/", (req, res) => {
 app.get("/data", async (req, res) => {
   const token = req.cookies.authToken;
   const reciever = jwt.verify(token, secret);
-  const sender = req.headers.senders;
 
   let msg = await query(
     `SELECT messages FROM uid WHERE username = "${reciever}"`
   );
-  const list = msg[0].messages;
-  if (list != null) {
-    const messages = list[sender];
-    const msgs = [];
-    messages.forEach((message) => {
-      const { enc, iv } = message;
-      const dec = decryptMessage(enc, iv);
-      msgs.push(dec);
-    });
-    return response.json(msgs);
-  } else {
-    return null;
-  }
+  return res.json(msg[0].messages);
 });
 app.post("/data", async (req, res) => {
   const token = req.cookies.authToken;
@@ -172,25 +129,21 @@ app.post("/login", async (req, res) => {
     return res.redirect("/signup");
   }
 
-  const pass = await query(
+  const password = await query(
     `SELECT password FROM uid WHERE username = "${req.body.username}"`
   );
-  const inpPass = req.body.password;
-  const password = pass[0].password;
-  verifyPass(inpPass, password).then((match) => {
-    if (match) {
-      const token = jwt.sign(req.body.username, secret);
+  if (password[0].password == req.body.password) {
+    const token = jwt.sign(req.body.username, secret);
 
-      res.cookie("authToken", token, {
-        httpOnly: true,
-        secure: false,
-        maxAge: 3600000,
-      });
-      return res.redirect("/");
-    } else {
-      console.log("Incorrect password, redirecting to login.");
-    }
-  });
+    res.cookie("authToken", token, {
+      httpOnly: true,
+      secure: false,
+      maxAge: 3600000,
+    });
+    return res.redirect("/");
+  } else {
+    console.log("Incorrect password, redirecting to login.");
+  }
 });
 
 app.get("/signup", (req, res) => {
@@ -199,9 +152,8 @@ app.get("/signup", (req, res) => {
 
 app.post("/signup", async (req, res) => {
   try {
-    const pass = await hashPass(req.body.password);
     await query(
-      `INSERT INTO uid (username, email, password) VALUES ("${req.body.username}", "${req.body.email}", "${pass}")`
+      `INSERT INTO uid (username, email, password) VALUES ("${req.body.username}", "${req.body.email}", "${req.body.password}")`
     ).then(() => {
       return res.redirect("/login");
     });
@@ -229,8 +181,7 @@ io.use((socket, next) => {
 });
 
 io.on("connection", async (socket) => {
-  socket.on("message", async ({ reciever, msg }) => {
-    const message = encryptMsg(msg);
+  socket.on("message", async ({ reciever, message }) => {
     const recipientSocketId = userSocketMap.get(reciever);
     const cookies = socket.handshake.headers.cookie;
     const auth = cookies
@@ -257,7 +208,7 @@ io.on("connection", async (socket) => {
     const values = [path, path, message, path, message, reciever];
     await query(Query, values);
     if (recipientSocketId) {
-      io.to(recipientSocketId).emit("message", sender, msg);
+      io.to(recipientSocketId).emit("message", sender, message);
     }
   });
 

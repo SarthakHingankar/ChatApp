@@ -13,13 +13,6 @@ app.use(express.static(path.join(__dirname, "public")));
 app.use(express.json());
 app.use(cookieParser());
 
-const cache = {
-  user1: {
-    id: 1,
-    username: "user1",
-  },
-};
-
 const pool = mysql.createPool({
   host: "localhost",
   user: "root",

@@ -7,8 +7,11 @@ const jwt = require("jsonwebtoken");
 const cookieParser = require("cookie-parser");
 require("dotenv").config();
 const bcrypt = require("bcrypt");
+const crypto = require("crypto");
 
+const secretKey = process.env.msgSecret;
 const secret = process.env.secretKey;
+const algorithm = "aes-256-ctr";
 const app = express();
 app.use(express.static(path.join(__dirname, "public")));
 app.use(express.json());
@@ -46,6 +49,28 @@ async function verifyPassword(inpass, pass) {
   return match;
 }
 
+function encryptMessage(message) {
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv(algorithm, secretKey, iv);
+  let encrypted = cipher.update(message, "utf8", "hex");
+  encrypted += cipher.final("hex");
+  return {
+    iv: iv.toString("hex"),
+    encryptedData: encrypted,
+  };
+}
+
+function decryptMessage(encryptedData, iv) {
+  const decipher = crypto.createDecipheriv(
+    algorithm,
+    secretKey,
+    Buffer.from(iv, "hex")
+  );
+  let decrypted = decipher.update(encryptedData, "hex", "utf-8");
+  decrypted += decipher.final("utf-8");
+  return decrypted;
+}
+
 const httpServer = createServer(app);
 const io = new Server(httpServer);
 const PORT = 3000;
@@ -68,12 +93,21 @@ app.get("/", (req, res) => {
 
 app.get("/data", async (req, res) => {
   const token = req.cookies.authToken;
+  const sender = req.headers.senders;
   const reciever = jwt.verify(token, secret);
 
   let msg = await query(
     `SELECT messages FROM uid WHERE username = "${reciever}"`
   );
-  return res.json(msg[0].messages);
+  const list = msg[0].messages;
+  const messages = list[sender];
+  const msgs = [];
+  messages.forEach((message) => {
+    const { iv, encryptedData } = message;
+    const decryptedMessage = decryptMessage(encryptedData, iv);
+    msgs.push(decryptedMessage);
+  });
+  return res.json(msgs);
 });
 app.post("/data", async (req, res) => {
   const token = req.cookies.authToken;
@@ -192,6 +226,7 @@ io.use((socket, next) => {
 
 io.on("connection", async (socket) => {
   socket.on("message", async ({ reciever, message }) => {
+    const msg = encryptMessage(message);
     const recipientSocketId = userSocketMap.get(reciever);
     const cookies = socket.handshake.headers.cookie;
     const auth = cookies
@@ -215,7 +250,7 @@ io.on("connection", async (socket) => {
     WHERE username = ?;
     `;
     let path = `$.${sender}`;
-    const values = [path, path, message, path, message, reciever];
+    const values = [path, path, msg, path, msg, reciever];
     await query(Query, values);
     if (recipientSocketId) {
       io.to(recipientSocketId).emit("message", sender, message);

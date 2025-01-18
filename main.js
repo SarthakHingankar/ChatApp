@@ -6,6 +6,7 @@ const path = require("path");
 const jwt = require("jsonwebtoken");
 const cookieParser = require("cookie-parser");
 require("dotenv").config();
+const bcrypt = require("bcrypt");
 
 const secret = process.env.secretKey;
 const app = express();
@@ -33,6 +34,17 @@ const query = async (query, params) => {
     });
   });
 };
+
+async function hashPass(password) {
+  const saltRounds = 10;
+  const hashPassword = await bcrypt.hash(password, saltRounds);
+  return hashPassword;
+}
+
+async function verifyPassword(inpass, pass) {
+  const match = await bcrypt.compare(inpass, pass);
+  return match;
+}
 
 const httpServer = createServer(app);
 const io = new Server(httpServer);
@@ -125,18 +137,22 @@ app.post("/login", async (req, res) => {
   const password = await query(
     `SELECT password FROM uid WHERE username = "${req.body.username}"`
   );
-  if (password[0].password == req.body.password) {
-    const token = jwt.sign(req.body.username, secret);
+  const pass = password[0].password;
+  const inpass = req.body.password;
+  verifyPassword(inpass, pass).then((match) => {
+    if (match) {
+      const token = jwt.sign(req.body.username, secret);
 
-    res.cookie("authToken", token, {
-      httpOnly: true,
-      secure: false,
-      maxAge: 3600000,
-    });
-    return res.redirect("/");
-  } else {
-    console.log("Incorrect password, redirecting to login.");
-  }
+      res.cookie("authToken", token, {
+        httpOnly: true,
+        secure: false,
+        maxAge: 3600000,
+      });
+      return res.redirect("/");
+    } else {
+      console.log("Incorrect password, redirecting to login.");
+    }
+  });
 });
 
 app.get("/signup", (req, res) => {
@@ -145,8 +161,9 @@ app.get("/signup", (req, res) => {
 
 app.post("/signup", async (req, res) => {
   try {
+    const pass = await hashPass(req.body.password);
     await query(
-      `INSERT INTO uid (username, email, password) VALUES ("${req.body.username}", "${req.body.email}", "${req.body.password}")`
+      `INSERT INTO uid (username, email, password) VALUES ("${req.body.username}", "${req.body.email}", "${pass}")`
     ).then(() => {
       return res.redirect("/login");
     });

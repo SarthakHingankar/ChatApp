@@ -101,13 +101,15 @@ app.get("/data", async (req, res) => {
   );
   const list = msg[0].messages;
   const messages = list[sender];
-  const msgs = [];
-  messages.forEach((message) => {
-    const { iv, encryptedData } = message;
-    const decryptedMessage = decryptMessage(encryptedData, iv);
-    msgs.push(decryptedMessage);
-  });
-  return res.json(msgs);
+  if (messages) {
+    const msgs = [];
+    messages.forEach((message) => {
+      const { iv, encryptedData } = message;
+      const decryptedMessage = decryptMessage(encryptedData, iv);
+      msgs.push(decryptedMessage);
+    });
+    return res.json(msgs);
+  }
 });
 app.post("/data", async (req, res) => {
   const token = req.cookies.authToken;
@@ -131,7 +133,20 @@ app.get("/friends", async (req, res) => {
     `SELECT friends FROM uid WHERE username = '${user}'`
   );
   const friend = friends[0]?.friends || [];
-  res.json(friend);
+  const unreadPromises = friend.map(async (friend) => {
+    const unreadmsg = await query(`
+      SELECT JSON_CONTAINS_PATH(messages, 'one', '$.${friend}') AS exist
+      FROM uid
+      WHERE username = '${user}';
+    `);
+    if (unreadmsg[0].exist) {
+      return friend;
+    }
+  });
+
+  const unreads = (await Promise.all(unreadPromises)).filter(Boolean);
+
+  return res.json({ friend, unreads });
 });
 
 app.post("/friends", async (req, res) => {
@@ -197,7 +212,7 @@ app.post("/signup", async (req, res) => {
   try {
     const pass = await hashPass(req.body.password);
     await query(
-      `INSERT INTO uid (username, email, password) VALUES ("${req.body.username}", "${req.body.email}", "${pass}")`
+      `INSERT INTO uid (username, email, password, friends, messages) VALUES ("${req.body.username}", "${req.body.email}", "${pass}", "[]", "{}")`
     ).then(() => {
       return res.redirect("/login");
     });
@@ -210,18 +225,20 @@ const userSocketMap = new Map();
 
 io.use((socket, next) => {
   const cookies = socket.handshake.headers.cookie;
-  const auth = cookies
-    .split("; ")
-    .find((c) => c.startsWith("authToken="))
-    ?.split("=")[1];
-  let uid = jwt.verify(auth, secret, (err, decoded) => {
-    if (err) {
-      return err;
-    }
-    return decoded;
-  });
-  userSocketMap.set(uid, socket.id);
-  next();
+  if (cookies) {
+    const auth = cookies
+      .split("; ")
+      .find((c) => c.startsWith("authToken="))
+      ?.split("=")[1];
+    let uid = jwt.verify(auth, secret, (err, decoded) => {
+      if (err) {
+        return err;
+      }
+      return decoded;
+    });
+    userSocketMap.set(uid, socket.id);
+    next();
+  }
 });
 
 io.on("connection", async (socket) => {
@@ -239,19 +256,18 @@ io.on("connection", async (socket) => {
       }
       return decoded;
     });
+    let path = `$.${sender}`;
     const Query = `
     UPDATE uid
     SET messages = CASE
-      WHEN JSON_CONTAINS_PATH(messages, 'one', ?) THEN 
-        JSON_ARRAY_APPEND(messages, ?, ?)
-      ELSE 
-        JSON_SET(messages, ?, JSON_ARRAY(?))
+        WHEN JSON_CONTAINS_PATH(messages, 'one', '${path}') THEN 
+            JSON_ARRAY_APPEND(messages, '${path}', JSON_OBJECT("iv", "${msg.iv}", "encryptedData", "${msg.encryptedData}"))
+        ELSE 
+            JSON_SET(messages, '${path}', JSON_ARRAY(JSON_OBJECT("iv", "${msg.iv}", "encryptedData", "${msg.encryptedData}")))
     END
-    WHERE username = ?;
+    WHERE username = '${reciever}';
     `;
-    let path = `$.${sender}`;
-    const values = [path, path, msg, path, msg, reciever];
-    await query(Query, values);
+    await query(Query);
     if (recipientSocketId) {
       io.to(recipientSocketId).emit("message", sender, message);
     }
